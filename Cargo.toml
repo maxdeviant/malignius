@@ -10,3 +10,5 @@ async-trait = "0.1.73"
 
 [dev-dependencies]
 derive_builder = "0.12.0"
+rusqlite = "0.29.0"
+tokio = { version = "1.32.0", features = ["full"] }
