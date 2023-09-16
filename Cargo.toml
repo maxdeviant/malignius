@@ -1,6 +1,13 @@
 [package]
 name = "malignius"
 version = "0.0.1"
+description = "Fixures and seeding for your tests"
+repository = "https://github.com/maxdeviant/malignius"
+documentation = "https://docs.rs/malignius"
+categories = ["development-tools::testing"]
+keywords = ["malignius", "fixtures", "seeding"]
+authors = ["Marshall Bowers <elliott.codes@gmail.com>"]
+license = "MIT"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
