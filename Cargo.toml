@@ -7,3 +7,6 @@ edition = "2021"
 
 [dependencies]
 async-trait = "0.1.73"
+
+[dev-dependencies]
+derive_builder = "0.12.0"
