@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
 pub trait Manifest {
-    type Overrides;
+    type Overrides: Default;
 
     fn manifest(overrides: Self::Overrides) -> Self;
 }
@@ -11,7 +11,30 @@ pub trait Persist: Manifest + Sized {
     type Conn;
     type Err;
 
-    async fn persist(conn: &mut Self::Conn) -> Result<Self, Self::Err>;
+    async fn persist(conn: &mut Self::Conn, entity: Self) -> Result<Self, Self::Err>;
+}
+
+#[inline(always)]
+pub fn manifest<T: Manifest>() -> T {
+    manifest_with(T::Overrides::default())
+}
+
+pub fn manifest_with<T: Manifest>(overrides: T::Overrides) -> T {
+    T::manifest(overrides)
+}
+
+#[inline(always)]
+pub async fn persist<T: Persist>(conn: &mut T::Conn) -> Result<T, T::Err> {
+    persist_with(conn, T::Overrides::default()).await
+}
+
+pub async fn persist_with<T: Persist>(
+    conn: &mut T::Conn,
+    overrides: T::Overrides,
+) -> Result<T, T::Err> {
+    let entity = manifest_with(overrides);
+
+    T::persist(conn, entity).await
 }
 
 #[cfg(test)]
@@ -43,9 +66,7 @@ mod tests {
         type Conn = Connection;
         type Err = rusqlite::Error;
 
-        async fn persist(conn: &mut Self::Conn) -> Result<Self, Self::Err> {
-            let movie = Movie::manifest(MovieBuilder::default());
-
+        async fn persist(conn: &mut Self::Conn, movie: Self) -> Result<Self, Self::Err> {
             conn.execute(
                 "
                     insert into movie (title, year) values ($1, $2)
@@ -59,7 +80,7 @@ mod tests {
 
     #[test]
     fn manifest_works() {
-        let movie = Movie::manifest(MovieBuilder::default());
+        let movie: Movie = manifest();
 
         assert_eq!(
             movie,
@@ -72,7 +93,7 @@ mod tests {
 
     #[test]
     fn manifest_works_with_overrides() {
-        let movie = Movie::manifest({
+        let movie: Movie = manifest_with({
             let mut movie = MovieBuilder::default();
             movie.title("The Social Network".into());
             movie
@@ -102,7 +123,7 @@ mod tests {
             (),
         )?;
 
-        let movie = Movie::persist(&mut conn).await?;
+        let movie: Movie = persist(&mut conn).await?;
 
         assert_eq!(
             movie,
