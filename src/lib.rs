@@ -149,4 +149,52 @@ mod tests {
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn persist_works_with_overrides() -> Result<(), Box<dyn std::error::Error>> {
+        let mut conn = Connection::open(":memory:")?;
+
+        conn.execute(
+            r#"
+                create table if not exists movie (
+                    id integer primary key,
+                    title text not null unique,
+                    year integer not null
+                );
+            "#,
+            (),
+        )?;
+
+        let movie: Movie = persist_with(&mut conn, {
+            let mut movie = MovieBuilder::default();
+            movie.title("The Social Network".into());
+            movie
+        })
+        .await?;
+
+        assert_eq!(
+            movie,
+            Movie {
+                title: "The Social Network".into(),
+                year: 2010
+            }
+        );
+
+        let persisted_movie = conn.query_row(
+            "
+                select title, year from movie where title = $1
+            ",
+            [movie.title.clone()],
+            |row| {
+                Ok(Movie {
+                    title: row.get(0).unwrap(),
+                    year: row.get(1).unwrap(),
+                })
+            },
+        )?;
+
+        assert_eq!(movie, persisted_movie);
+
+        Ok(())
+    }
 }
