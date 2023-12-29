@@ -1,18 +1,16 @@
 #![doc = include_str!("../README.md")]
 
-use async_trait::async_trait;
-
 pub trait Manifest {
     type Overrides: Default;
 
     fn manifest(overrides: Self::Overrides) -> Self;
 }
 
-#[async_trait]
 pub trait Persist: Manifest + Sized {
     type Conn;
     type Err;
 
+    #[allow(async_fn_in_trait)]
     async fn persist(conn: &mut Self::Conn, entity: Self) -> Result<Self, Self::Err>;
 }
 
@@ -63,7 +61,6 @@ mod tests {
         }
     }
 
-    #[async_trait]
     impl Persist for Movie {
         type Conn = Connection;
         type Err = rusqlite::Error;
