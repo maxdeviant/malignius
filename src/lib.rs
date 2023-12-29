@@ -53,10 +53,10 @@ mod tests {
     impl Manifest for Movie {
         type Overrides = MovieBuilder;
 
-        fn manifest(builder: Self::Overrides) -> Self {
+        fn manifest(overrides: Self::Overrides) -> Self {
             Self {
-                title: builder.title.unwrap_or("Inception".into()),
-                year: builder.year.unwrap_or(2010),
+                title: overrides.title.unwrap_or("Inception".into()),
+                year: overrides.year.unwrap_or(2010),
             }
         }
     }
