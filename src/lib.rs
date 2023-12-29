@@ -1,5 +1,9 @@
 #![doc = include_str!("../README.md")]
 
+mod sequence;
+
+pub use sequence::*;
+
 pub trait Manifest {
     type Overrides: Default;
 
