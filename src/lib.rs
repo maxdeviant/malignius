@@ -4,13 +4,31 @@ mod sequence;
 
 pub use sequence::*;
 
-pub trait Manifest {
-    type Overrides: Default;
+pub trait PersistAssociations: Sized {
+    type Conn;
+    type Err;
 
-    fn manifest(overrides: Self::Overrides) -> Self;
+    #[allow(async_fn_in_trait)]
+    async fn persist(conn: &Self::Conn, entity: Self) -> Result<(), Self::Err>;
 }
 
-pub trait Persist: Manifest + Sized {
+impl PersistAssociations for () {
+    type Conn = ();
+    type Err = ();
+
+    async fn persist(_conn: &Self::Conn, _entity: Self) -> Result<(), Self::Err> {
+        Ok(())
+    }
+}
+
+pub trait Manifest: Sized {
+    type Overrides: Default;
+    type Associations: PersistAssociations;
+
+    fn manifest(overrides: Self::Overrides) -> (Self, Self::Associations);
+}
+
+pub trait Persist: Manifest {
     type Conn;
     type Err;
 
@@ -24,7 +42,8 @@ pub fn manifest<T: Manifest>() -> T {
 }
 
 pub fn manifest_with<T: Manifest>(overrides: T::Overrides) -> T {
-    T::manifest(overrides)
+    let (entity, _) = T::manifest(overrides);
+    entity
 }
 
 #[inline(always)]
@@ -36,7 +55,9 @@ pub async fn persist_with<T: Persist>(
     conn: &T::Conn,
     overrides: T::Overrides,
 ) -> Result<T, T::Err> {
-    let entity = manifest_with(overrides);
+    let (entity, associations) = T::manifest(overrides);
+
+    PersistAssociations::persist(conn, associations).await?;
 
     T::persist(conn, entity).await
 }
@@ -56,12 +77,16 @@ mod tests {
 
     impl Manifest for Movie {
         type Overrides = MovieBuilder;
+        type Associations = ();
 
-        fn manifest(overrides: Self::Overrides) -> Self {
-            Self {
-                title: overrides.title.unwrap_or("Inception".into()),
-                year: overrides.year.unwrap_or(2010),
-            }
+        fn manifest(overrides: Self::Overrides) -> (Self, Self::Associations) {
+            (
+                Self {
+                    title: overrides.title.unwrap_or("Inception".into()),
+                    year: overrides.year.unwrap_or(2010),
+                },
+                (),
+            )
         }
     }
 
@@ -213,12 +238,16 @@ mod tests {
 
     impl Manifest for Author {
         type Overrides = AuthorBuilder;
+        type Associations = ();
 
-        fn manifest(overrides: Self::Overrides) -> Self {
-            Self {
-                id: overrides.id.unwrap_or(AuthorId(1)),
-                name: overrides.name.unwrap_or("Author 1".into()),
-            }
+        fn manifest(overrides: Self::Overrides) -> (Self, Self::Associations) {
+            (
+                Self {
+                    id: overrides.id.unwrap_or(AuthorId(1)),
+                    name: overrides.name.unwrap_or("Author 1".into()),
+                },
+                (),
+            )
         }
     }
 
@@ -248,17 +277,49 @@ mod tests {
         pub title: String,
     }
 
+    struct PostAssociations {
+        pub author: Option<Author>,
+    }
+
+    impl PersistAssociations for PostAssociations {
+        type Conn = Connection;
+        type Err = rusqlite::Error;
+
+        async fn persist(conn: &Self::Conn, entity: Self) -> Result<(), Self::Err> {
+            if let Some(author) = entity.author {
+                Author::persist(conn, author).await?;
+            }
+
+            Ok(())
+        }
+    }
+
     impl Manifest for Post {
         type Overrides = PostBuilder;
+        type Associations = PostAssociations;
 
-        fn manifest(overrides: Self::Overrides) -> Self {
-            Self {
-                id: overrides.id.unwrap_or(PostId(1)),
-                author_id: overrides
-                    .author_id
-                    .unwrap_or_else(|| manifest::<Author>().id),
-                title: overrides.title.unwrap_or("Post 1".into()),
-            }
+        fn manifest(overrides: Self::Overrides) -> (Self, Self::Associations) {
+            let mut assoc_author = None;
+
+            let author_id = overrides.author_id.unwrap_or_else(|| {
+                let author = manifest::<Author>();
+                let author_id = author.id;
+
+                assoc_author = Some(author);
+
+                author_id
+            });
+
+            (
+                Self {
+                    id: overrides.id.unwrap_or(PostId(1)),
+                    author_id,
+                    title: overrides.title.unwrap_or("Post 1".into()),
+                },
+                PostAssociations {
+                    author: assoc_author,
+                },
+            )
         }
     }
 
@@ -288,15 +349,36 @@ mod tests {
         pub username: String,
     }
 
+    struct CommentAssociations {
+        pub post: Option<Post>,
+    }
+
+    impl PersistAssociations for CommentAssociations {
+        type Conn = Connection;
+        type Err = rusqlite::Error;
+
+        async fn persist(conn: &Self::Conn, entity: Self) -> Result<(), Self::Err> {
+            if let Some(post) = entity.post {
+                Post::persist(conn, post).await?;
+            }
+
+            Ok(())
+        }
+    }
+
     impl Manifest for Comment {
         type Overrides = CommentBuilder;
+        type Associations = CommentAssociations;
 
-        fn manifest(overrides: Self::Overrides) -> Self {
-            Self {
-                id: overrides.id.unwrap_or(CommentId(1)),
-                post_id: overrides.post_id.unwrap_or_else(|| manifest::<Post>().id),
-                username: overrides.username.unwrap_or("user1".into()),
-            }
+        fn manifest(overrides: Self::Overrides) -> (Self, Self::Associations) {
+            (
+                Self {
+                    id: overrides.id.unwrap_or(CommentId(1)),
+                    post_id: overrides.post_id.unwrap_or_else(|| manifest::<Post>().id),
+                    username: overrides.username.unwrap_or("user1".into()),
+                },
+                CommentAssociations { post: None },
+            )
         }
     }
 
@@ -316,7 +398,7 @@ mod tests {
         }
     }
 
-    #[ignore = "work in progress"]
+    // #[ignore = "work in progress"]
     #[tokio::test]
     async fn persist_works_with_an_entity_hierarchy() -> Result<(), Box<dyn std::error::Error>> {
         let mut conn = Connection::open(":memory:")?;
