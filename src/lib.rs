@@ -8,22 +8,24 @@ use std::pin::Pin;
 
 pub use sequence::*;
 
-struct AnyAssociation {
+struct AnyAssociation<Conn> {
     entity_type: TypeId,
     persist: Box<
-        dyn FnOnce() -> Pin<
+        dyn FnOnce(
+            &Conn,
+        ) -> Pin<
             Box<dyn Future<Output = Result<Box<dyn Any>, Box<dyn std::error::Error>>>>,
         >,
     >,
 }
 
-impl AnyAssociation {}
+impl<Conn> AnyAssociation<Conn> {}
 
-pub struct Associations {
-    associations: Vec<AnyAssociation>,
+pub struct Associations<Conn> {
+    associations: Vec<AnyAssociation<Conn>>,
 }
 
-impl Associations {
+impl<Conn> Associations<Conn> {
     pub fn new() -> Self {
         Self {
             associations: Vec::new(),
@@ -32,14 +34,14 @@ impl Associations {
 
     pub fn persist<
         T: 'static,
-        F: Fn() -> Pin<Box<dyn Future<Output = Result<T, Box<dyn std::error::Error>>>>> + 'static,
+        F: Fn(&Conn) -> Pin<Box<dyn Future<Output = Result<T, Box<dyn std::error::Error>>>>> + 'static,
     >(
         &mut self,
         persist: F,
     ) {
-        let f = || {
+        let f = |conn| {
             Box::pin(async move {
-                let value = persist().await?;
+                let value = persist(conn).await?;
 
                 Ok(Box::new(value) as Box<dyn Any>)
             })
@@ -55,8 +57,9 @@ impl Associations {
 
 pub trait Manifest {
     type Overrides: Default;
+    type AssocationsConn;
 
-    fn manifest(overrides: Self::Overrides) -> (Self, Associations)
+    fn manifest(overrides: Self::Overrides) -> (Self, Associations<Self::AssocationsConn>)
     where
         Self: Sized;
 }
@@ -93,7 +96,7 @@ pub async fn persist_with<T: Manifest + Persist>(
     let (entity, associations) = T::manifest(overrides);
 
     for association in associations.associations {
-        (association.persist)().await.unwrap();
+        (association.persist)(conn).await.unwrap();
     }
 
     T::persist(conn, entity).await
@@ -114,8 +117,9 @@ mod tests {
 
     impl Manifest for Movie {
         type Overrides = MovieBuilder;
+        type AssocationsConn = Connection;
 
-        fn manifest(overrides: Self::Overrides) -> (Self, Associations) {
+        fn manifest(overrides: Self::Overrides) -> (Self, Associations<Connection>) {
             (
                 Self {
                     title: overrides.title.unwrap_or("Inception".into()),
@@ -274,8 +278,9 @@ mod tests {
 
     impl Manifest for Author {
         type Overrides = AuthorBuilder;
+        type AssocationsConn = Connection;
 
-        fn manifest(overrides: Self::Overrides) -> (Self, Associations) {
+        fn manifest(overrides: Self::Overrides) -> (Self, Associations<Connection>) {
             (
                 Self {
                     id: overrides.id.unwrap_or(AuthorId(1)),
@@ -314,15 +319,16 @@ mod tests {
 
     impl Manifest for Post {
         type Overrides = PostBuilder;
+        type AssocationsConn = Connection;
 
-        fn manifest(overrides: Self::Overrides) -> (Self, Associations) {
+        fn manifest(overrides: Self::Overrides) -> (Self, Associations<Connection>) {
             let mut associations = Associations::new();
 
             let author_id = overrides.author_id.unwrap_or_else(|| {
                 let author = manifest::<Author>();
                 let author_id = author.id;
 
-                associations.persist::<Author, _>(|| {
+                associations.persist::<Author, _>(|conn| {
                     eprintln!("Hellllo");
 
                     todo!()
@@ -370,15 +376,16 @@ mod tests {
 
     impl Manifest for Comment {
         type Overrides = CommentBuilder;
+        type AssocationsConn = Connection;
 
-        fn manifest(overrides: Self::Overrides) -> (Self, Associations) {
+        fn manifest(overrides: Self::Overrides) -> (Self, Associations<Connection>) {
             let mut associations = Associations::new();
 
             let post_id = overrides.post_id.unwrap_or_else(|| {
                 let post = manifest::<Post>();
                 let post_id = post.id;
 
-                associations.persist::<Post, _>(|| {
+                associations.persist::<Post, _>(|conn| {
                     eprintln!("HERE");
 
                     todo!()
