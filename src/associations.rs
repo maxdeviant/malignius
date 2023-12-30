@@ -3,11 +3,9 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use crate::{manifest, persist, Manifest, Persist};
+use crate::{manifest, persist, Persist};
 
-pub fn association<T: Manifest<AssociationsConn = T::Conn> + Persist + 'static>(
-    associations: &mut Associations<T::Conn>,
-) -> T {
+pub fn association<T: Persist + 'static>(associations: &mut Associations<T::Context>) -> T {
     let entity = manifest::<T>();
 
     associations.persist::<T, _>(move |conn| {
@@ -21,22 +19,22 @@ pub fn association<T: Manifest<AssociationsConn = T::Conn> + Persist + 'static>(
     entity
 }
 
-pub(crate) struct AnyAssociation<Conn> {
+pub(crate) struct AnyAssociation<Context> {
     entity_type: TypeId,
     pub(crate) persist: Box<
         dyn FnOnce(
-            Arc<Conn>,
+            Arc<Context>,
         ) -> Pin<
             Box<dyn Future<Output = Result<Box<dyn Any>, Box<dyn std::error::Error>>>>,
         >,
     >,
 }
 
-pub struct Associations<Conn> {
-    pub(crate) associations: Vec<AnyAssociation<Conn>>,
+pub struct Associations<Context> {
+    pub(crate) associations: Vec<AnyAssociation<Context>>,
 }
 
-impl<Conn: 'static> Associations<Conn> {
+impl<Context: 'static> Associations<Context> {
     pub fn new() -> Self {
         Self {
             associations: Vec::new(),
@@ -46,7 +44,7 @@ impl<Conn: 'static> Associations<Conn> {
     pub(crate) fn persist<
         T: 'static,
         F: FnOnce(
-                Arc<Conn>,
+                Arc<Context>,
             )
                 -> Pin<Box<dyn Future<Output = Result<T, Box<dyn std::error::Error>>>>>
             + 'static,

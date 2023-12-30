@@ -9,20 +9,19 @@ pub use associations::*;
 pub use sequence::*;
 
 pub trait Manifest {
+    type Context;
     type Overrides: Default;
-    type AssociationsConn;
 
-    fn manifest(overrides: Self::Overrides) -> (Self, Associations<Self::AssociationsConn>)
+    fn manifest(overrides: Self::Overrides) -> (Self, Associations<Self::Context>)
     where
         Self: Sized;
 }
 
-pub trait Persist {
-    type Conn;
+pub trait Persist: Manifest {
     type Err;
 
     #[allow(async_fn_in_trait)]
-    async fn persist(conn: &Self::Conn, entity: Self) -> Result<Self, Self::Err>
+    async fn persist(ctx: &Self::Context, entity: Self) -> Result<Self, Self::Err>
     where
         Self: Sized;
 }
@@ -38,23 +37,21 @@ pub fn manifest_with<T: Manifest>(overrides: T::Overrides) -> T {
 }
 
 #[inline(always)]
-pub async fn persist<T: Manifest<AssociationsConn = T::Conn> + Persist>(
-    conn: Arc<T::Conn>,
-) -> Result<T, T::Err> {
-    persist_with(conn, T::Overrides::default()).await
+pub async fn persist<T: Persist>(ctx: Arc<T::Context>) -> Result<T, T::Err> {
+    persist_with(ctx, T::Overrides::default()).await
 }
 
-pub async fn persist_with<T: Manifest<AssociationsConn = T::Conn> + Persist>(
-    conn: Arc<T::Conn>,
+pub async fn persist_with<T: Persist>(
+    ctx: Arc<T::Context>,
     overrides: T::Overrides,
 ) -> Result<T, T::Err> {
     let (entity, associations) = T::manifest(overrides);
 
     for association in associations.associations {
-        (association.persist)(conn.clone()).await.unwrap();
+        (association.persist)(ctx.clone()).await.unwrap();
     }
 
-    T::persist(&conn, entity).await
+    T::persist(&ctx, entity).await
 }
 
 #[cfg(test)]
@@ -64,6 +61,10 @@ mod tests {
 
     use super::*;
 
+    struct TestContext {
+        pub conn: Connection,
+    }
+
     #[derive(Debug, Builder, PartialEq, Eq)]
     struct Movie {
         pub title: String,
@@ -71,10 +72,10 @@ mod tests {
     }
 
     impl Manifest for Movie {
+        type Context = TestContext;
         type Overrides = MovieBuilder;
-        type AssociationsConn = Connection;
 
-        fn manifest(overrides: Self::Overrides) -> (Self, Associations<Connection>) {
+        fn manifest(overrides: Self::Overrides) -> (Self, Associations<Self::Context>) {
             (
                 Self {
                     title: overrides.title.unwrap_or("Inception".into()),
@@ -86,11 +87,10 @@ mod tests {
     }
 
     impl Persist for Movie {
-        type Conn = Connection;
         type Err = rusqlite::Error;
 
-        async fn persist(conn: &Self::Conn, movie: Self) -> Result<Self, Self::Err> {
-            conn.execute(
+        async fn persist(ctx: &Self::Context, movie: Self) -> Result<Self, Self::Err> {
+            ctx.conn.execute(
                 "
                     insert into movie (title, year) values ($1, $2)
                 ",
@@ -146,9 +146,9 @@ mod tests {
             (),
         )?;
 
-        let conn = Arc::new(conn);
+        let ctx = Arc::new(TestContext { conn });
 
-        let movie: Movie = persist(conn.clone()).await?;
+        let movie: Movie = persist(ctx.clone()).await?;
 
         assert_eq!(
             movie,
@@ -158,7 +158,7 @@ mod tests {
             }
         );
 
-        let persisted_movie = conn.query_row(
+        let persisted_movie = ctx.conn.query_row(
             "
                 select title, year from movie where title = $1
             ",
@@ -191,9 +191,9 @@ mod tests {
             (),
         )?;
 
-        let conn = Arc::new(conn);
+        let ctx = Arc::new(TestContext { conn });
 
-        let movie: Movie = persist_with(conn.clone(), {
+        let movie: Movie = persist_with(ctx.clone(), {
             let mut movie = MovieBuilder::default();
             movie.title("The Social Network".into());
             movie
@@ -208,7 +208,7 @@ mod tests {
             }
         );
 
-        let persisted_movie = conn.query_row(
+        let persisted_movie = ctx.conn.query_row(
             "
                 select title, year from movie where title = $1
             ",
@@ -236,10 +236,10 @@ mod tests {
     }
 
     impl Manifest for Author {
+        type Context = TestContext;
         type Overrides = AuthorBuilder;
-        type AssociationsConn = Connection;
 
-        fn manifest(overrides: Self::Overrides) -> (Self, Associations<Connection>) {
+        fn manifest(overrides: Self::Overrides) -> (Self, Associations<Self::Context>) {
             (
                 Self {
                     id: overrides.id.unwrap_or(AuthorId(1)),
@@ -251,11 +251,10 @@ mod tests {
     }
 
     impl Persist for Author {
-        type Conn = Connection;
         type Err = rusqlite::Error;
 
-        async fn persist(conn: &Self::Conn, author: Self) -> Result<Self, Self::Err> {
-            conn.execute(
+        async fn persist(ctx: &Self::Context, author: Self) -> Result<Self, Self::Err> {
+            ctx.conn.execute(
                 "
                     insert into author (id, name) values ($1, $2)
                 ",
@@ -277,10 +276,10 @@ mod tests {
     }
 
     impl Manifest for Post {
+        type Context = TestContext;
         type Overrides = PostBuilder;
-        type AssociationsConn = Connection;
 
-        fn manifest(overrides: Self::Overrides) -> (Self, Associations<Connection>) {
+        fn manifest(overrides: Self::Overrides) -> (Self, Associations<Self::Context>) {
             let mut associations = Associations::new();
 
             let author_id = overrides
@@ -299,11 +298,10 @@ mod tests {
     }
 
     impl Persist for Post {
-        type Conn = Connection;
         type Err = rusqlite::Error;
 
-        async fn persist(conn: &Self::Conn, post: Self) -> Result<Self, Self::Err> {
-            conn.execute(
+        async fn persist(ctx: &Self::Context, post: Self) -> Result<Self, Self::Err> {
+            ctx.conn.execute(
                 "
                     insert into post (id, author_id, title) values ($1, $2, $3)
                 ",
@@ -325,10 +323,10 @@ mod tests {
     }
 
     impl Manifest for Comment {
+        type Context = TestContext;
         type Overrides = CommentBuilder;
-        type AssociationsConn = Connection;
 
-        fn manifest(overrides: Self::Overrides) -> (Self, Associations<Connection>) {
+        fn manifest(overrides: Self::Overrides) -> (Self, Associations<Self::Context>) {
             let mut associations = Associations::new();
 
             let post_id = overrides
@@ -346,11 +344,10 @@ mod tests {
     }
 
     impl Persist for Comment {
-        type Conn = Connection;
         type Err = rusqlite::Error;
 
-        async fn persist(conn: &Self::Conn, comment: Self) -> Result<Self, Self::Err> {
-            conn.execute(
+        async fn persist(ctx: &Self::Context, comment: Self) -> Result<Self, Self::Err> {
+            ctx.conn.execute(
                 "
                     insert into comment (id, post_id, username) values ($1, $2, $3)
                 ",
@@ -388,12 +385,14 @@ mod tests {
             "#,
         )?;
 
-        let conn = Arc::new(conn);
+        let ctx = Arc::new(TestContext { conn });
 
-        let comment: Comment = persist(conn.clone()).await?;
+        let comment: Comment = persist(ctx.clone()).await?;
 
         let persisted_comments = {
-            let mut stmt = conn.prepare("select id, post_id, username from comment")?;
+            let mut stmt = ctx
+                .conn
+                .prepare("select id, post_id, username from comment")?;
             let persisted_comments = stmt
                 .query_map([], |row| {
                     Ok(Comment {
@@ -410,7 +409,7 @@ mod tests {
         assert_eq!(persisted_comments, vec![comment.clone()]);
 
         let persisted_posts = {
-            let mut stmt = conn.prepare("select id, author_id, title from post")?;
+            let mut stmt = ctx.conn.prepare("select id, author_id, title from post")?;
             let persisted_posts = stmt
                 .query_map([], |row| {
                     Ok(Post {
