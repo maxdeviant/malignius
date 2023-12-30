@@ -342,7 +342,7 @@ mod tests {
 
                 associations.persist::<Author, _>(move |conn| {
                     Box::pin(async move {
-                        let author = Author::persist(&conn, author).await?;
+                        let author = persist::<Author>(conn).await?;
 
                         Ok(author)
                     })
@@ -401,7 +401,7 @@ mod tests {
 
                 associations.persist::<Post, _>(move |conn| {
                     Box::pin(async move {
-                        let post = Post::persist(&conn, post).await?;
+                        let post = persist::<Post>(conn).await?;
 
                         Ok(post)
                     })
