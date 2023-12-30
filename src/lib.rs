@@ -5,6 +5,7 @@ mod sequence;
 use std::any::{Any, TypeId};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
 pub use sequence::*;
 
@@ -12,7 +13,7 @@ struct AnyAssociation<Conn> {
     entity_type: TypeId,
     persist: Box<
         dyn FnOnce(
-            &Conn,
+            Arc<Conn>,
         ) -> Pin<
             Box<dyn Future<Output = Result<Box<dyn Any>, Box<dyn std::error::Error>>>>,
         >,
@@ -25,7 +26,7 @@ pub struct Associations<Conn> {
     associations: Vec<AnyAssociation<Conn>>,
 }
 
-impl<Conn> Associations<Conn> {
+impl<Conn: 'static> Associations<Conn> {
     pub fn new() -> Self {
         Self {
             associations: Vec::new(),
@@ -34,32 +35,37 @@ impl<Conn> Associations<Conn> {
 
     pub fn persist<
         T: 'static,
-        F: Fn(&Conn) -> Pin<Box<dyn Future<Output = Result<T, Box<dyn std::error::Error>>>>> + 'static,
+        F: FnOnce(
+                Arc<Conn>,
+            )
+                -> Pin<Box<dyn Future<Output = Result<T, Box<dyn std::error::Error>>>>>
+            + 'static,
     >(
         &mut self,
         persist: F,
     ) {
-        let f = |conn| {
-            Box::pin(async move {
-                let value = persist(conn).await?;
-
-                Ok(Box::new(value) as Box<dyn Any>)
-            })
-                as Pin<Box<dyn Future<Output = Result<Box<dyn Any>, Box<dyn std::error::Error>>>>>
-        };
-
         self.associations.push(AnyAssociation {
             entity_type: TypeId::of::<T>(),
-            persist: Box::new(f),
+            persist: Box::new(|conn| {
+                let conn = conn.clone();
+                Box::pin(async move {
+                    let value = persist(conn).await?;
+
+                    Ok(Box::new(value) as Box<dyn Any>)
+                })
+                    as Pin<
+                        Box<dyn Future<Output = Result<Box<dyn Any>, Box<dyn std::error::Error>>>>,
+                    >
+            }),
         });
     }
 }
 
 pub trait Manifest {
     type Overrides: Default;
-    type AssocationsConn;
+    type AssociationsConn;
 
-    fn manifest(overrides: Self::Overrides) -> (Self, Associations<Self::AssocationsConn>)
+    fn manifest(overrides: Self::Overrides) -> (Self, Associations<Self::AssociationsConn>)
     where
         Self: Sized;
 }
@@ -85,21 +91,23 @@ pub fn manifest_with<T: Manifest>(overrides: T::Overrides) -> T {
 }
 
 #[inline(always)]
-pub async fn persist<T: Manifest + Persist>(conn: &T::Conn) -> Result<T, T::Err> {
+pub async fn persist<T: Manifest<AssociationsConn = T::Conn> + Persist>(
+    conn: Arc<T::Conn>,
+) -> Result<T, T::Err> {
     persist_with(conn, T::Overrides::default()).await
 }
 
-pub async fn persist_with<T: Manifest + Persist>(
-    conn: &T::Conn,
+pub async fn persist_with<T: Manifest<AssociationsConn = T::Conn> + Persist>(
+    conn: Arc<T::Conn>,
     overrides: T::Overrides,
 ) -> Result<T, T::Err> {
     let (entity, associations) = T::manifest(overrides);
 
     for association in associations.associations {
-        (association.persist)(conn).await.unwrap();
+        (association.persist)(conn.clone()).await.unwrap();
     }
 
-    T::persist(conn, entity).await
+    T::persist(&conn, entity).await
 }
 
 #[cfg(test)]
@@ -117,7 +125,7 @@ mod tests {
 
     impl Manifest for Movie {
         type Overrides = MovieBuilder;
-        type AssocationsConn = Connection;
+        type AssociationsConn = Connection;
 
         fn manifest(overrides: Self::Overrides) -> (Self, Associations<Connection>) {
             (
@@ -178,7 +186,7 @@ mod tests {
 
     #[tokio::test]
     async fn persist_works() -> Result<(), Box<dyn std::error::Error>> {
-        let mut conn = Connection::open(":memory:")?;
+        let conn = Connection::open(":memory:")?;
 
         conn.execute(
             r#"
@@ -191,7 +199,9 @@ mod tests {
             (),
         )?;
 
-        let movie: Movie = persist(&mut conn).await?;
+        let conn = Arc::new(conn);
+
+        let movie: Movie = persist(conn.clone()).await?;
 
         assert_eq!(
             movie,
@@ -221,7 +231,7 @@ mod tests {
 
     #[tokio::test]
     async fn persist_works_with_overrides() -> Result<(), Box<dyn std::error::Error>> {
-        let mut conn = Connection::open(":memory:")?;
+        let conn = Connection::open(":memory:")?;
 
         conn.execute(
             r#"
@@ -234,7 +244,9 @@ mod tests {
             (),
         )?;
 
-        let movie: Movie = persist_with(&mut conn, {
+        let conn = Arc::new(conn);
+
+        let movie: Movie = persist_with(conn.clone(), {
             let mut movie = MovieBuilder::default();
             movie.title("The Social Network".into());
             movie
@@ -278,7 +290,7 @@ mod tests {
 
     impl Manifest for Author {
         type Overrides = AuthorBuilder;
-        type AssocationsConn = Connection;
+        type AssociationsConn = Connection;
 
         fn manifest(overrides: Self::Overrides) -> (Self, Associations<Connection>) {
             (
@@ -319,7 +331,7 @@ mod tests {
 
     impl Manifest for Post {
         type Overrides = PostBuilder;
-        type AssocationsConn = Connection;
+        type AssociationsConn = Connection;
 
         fn manifest(overrides: Self::Overrides) -> (Self, Associations<Connection>) {
             let mut associations = Associations::new();
@@ -328,10 +340,12 @@ mod tests {
                 let author = manifest::<Author>();
                 let author_id = author.id;
 
-                associations.persist::<Author, _>(|conn| {
-                    eprintln!("Hellllo");
+                associations.persist::<Author, _>(move |conn| {
+                    Box::pin(async move {
+                        let author = Author::persist(&conn, author).await?;
 
-                    todo!()
+                        Ok(author)
+                    })
                 });
 
                 author_id
@@ -376,7 +390,7 @@ mod tests {
 
     impl Manifest for Comment {
         type Overrides = CommentBuilder;
-        type AssocationsConn = Connection;
+        type AssociationsConn = Connection;
 
         fn manifest(overrides: Self::Overrides) -> (Self, Associations<Connection>) {
             let mut associations = Associations::new();
@@ -385,10 +399,12 @@ mod tests {
                 let post = manifest::<Post>();
                 let post_id = post.id;
 
-                associations.persist::<Post, _>(|conn| {
-                    eprintln!("HERE");
+                associations.persist::<Post, _>(move |conn| {
+                    Box::pin(async move {
+                        let post = Post::persist(&conn, post).await?;
 
-                    todo!()
+                        Ok(post)
+                    })
                 });
 
                 post_id
@@ -424,7 +440,7 @@ mod tests {
     // #[ignore = "work in progress"]
     #[tokio::test]
     async fn persist_works_with_an_entity_hierarchy() -> Result<(), Box<dyn std::error::Error>> {
-        let mut conn = Connection::open(":memory:")?;
+        let conn = Connection::open(":memory:")?;
 
         conn.pragma_update(None, "foreign_keys", "on")?;
 
@@ -449,12 +465,12 @@ mod tests {
             "#,
         )?;
 
-        let tx = conn.transaction()?;
+        let conn = Arc::new(conn);
 
-        let comment: Comment = persist(&*tx).await?;
+        let comment: Comment = persist(conn.clone()).await?;
 
         let persisted_comments = {
-            let mut stmt = tx.prepare("select id, post_id, username from comment")?;
+            let mut stmt = conn.prepare("select id, post_id, username from comment")?;
             let persisted_comments = stmt
                 .query_map([], |row| {
                     Ok(Comment {
@@ -471,7 +487,7 @@ mod tests {
         assert_eq!(persisted_comments, vec![comment.clone()]);
 
         let persisted_posts = {
-            let mut stmt = tx.prepare("select id, author_id, title from post")?;
+            let mut stmt = conn.prepare("select id, author_id, title from post")?;
             let persisted_posts = stmt
                 .query_map([], |row| {
                     Ok(Post {
@@ -493,8 +509,6 @@ mod tests {
                 title: "Post 1".into()
             }]
         );
-
-        tx.commit()?;
 
         Ok(())
     }
