@@ -110,6 +110,22 @@ pub async fn persist_with<T: Manifest<AssociationsConn = T::Conn> + Persist>(
     T::persist(&conn, entity).await
 }
 
+pub fn association<T: Manifest<AssociationsConn = T::Conn> + Persist + 'static>(
+    associations: &mut Associations<T::Conn>,
+) -> T {
+    let entity = manifest::<T>();
+
+    associations.persist::<T, _>(move |conn| {
+        Box::pin(async move {
+            let entity = persist::<T>(conn).await.map_err(|_| "failed to persist")?;
+
+            Ok(entity)
+        })
+    });
+
+    entity
+}
+
 #[cfg(test)]
 mod tests {
     use derive_builder::Builder;
@@ -336,20 +352,9 @@ mod tests {
         fn manifest(overrides: Self::Overrides) -> (Self, Associations<Connection>) {
             let mut associations = Associations::new();
 
-            let author_id = overrides.author_id.unwrap_or_else(|| {
-                let author = manifest::<Author>();
-                let author_id = author.id;
-
-                associations.persist::<Author, _>(move |conn| {
-                    Box::pin(async move {
-                        let author = persist::<Author>(conn).await?;
-
-                        Ok(author)
-                    })
-                });
-
-                author_id
-            });
+            let author_id = overrides
+                .author_id
+                .unwrap_or_else(|| association::<Author>(&mut associations).id);
 
             (
                 Self {
@@ -395,21 +400,9 @@ mod tests {
         fn manifest(overrides: Self::Overrides) -> (Self, Associations<Connection>) {
             let mut associations = Associations::new();
 
-            let post_id = overrides.post_id.unwrap_or_else(|| {
-                let post = manifest::<Post>();
-                let post_id = post.id;
-
-                associations.persist::<Post, _>(move |conn| {
-                    Box::pin(async move {
-                        let post = persist::<Post>(conn).await?;
-
-                        Ok(post)
-                    })
-                });
-
-                post_id
-            });
-
+            let post_id = overrides
+                .post_id
+                .unwrap_or_else(|| association::<Post>(&mut associations).id);
             (
                 Self {
                     id: overrides.id.unwrap_or(CommentId(1)),
@@ -437,7 +430,6 @@ mod tests {
         }
     }
 
-    // #[ignore = "work in progress"]
     #[tokio::test]
     async fn persist_works_with_an_entity_hierarchy() -> Result<(), Box<dyn std::error::Error>> {
         let conn = Connection::open(":memory:")?;
