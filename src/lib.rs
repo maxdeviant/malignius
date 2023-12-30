@@ -47,7 +47,6 @@ impl<Conn: 'static> Associations<Conn> {
         self.associations.push(AnyAssociation {
             entity_type: TypeId::of::<T>(),
             persist: Box::new(|conn| {
-                let conn = conn.clone();
                 Box::pin(async move {
                     let value = persist(conn).await?;
 
