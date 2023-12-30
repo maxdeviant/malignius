@@ -1,64 +1,12 @@
 #![doc = include_str!("../README.md")]
 
+mod associations;
 mod sequence;
 
-use std::any::{Any, TypeId};
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 
+pub use associations::*;
 pub use sequence::*;
-
-struct AnyAssociation<Conn> {
-    entity_type: TypeId,
-    persist: Box<
-        dyn FnOnce(
-            Arc<Conn>,
-        ) -> Pin<
-            Box<dyn Future<Output = Result<Box<dyn Any>, Box<dyn std::error::Error>>>>,
-        >,
-    >,
-}
-
-impl<Conn> AnyAssociation<Conn> {}
-
-pub struct Associations<Conn> {
-    associations: Vec<AnyAssociation<Conn>>,
-}
-
-impl<Conn: 'static> Associations<Conn> {
-    pub fn new() -> Self {
-        Self {
-            associations: Vec::new(),
-        }
-    }
-
-    pub fn persist<
-        T: 'static,
-        F: FnOnce(
-                Arc<Conn>,
-            )
-                -> Pin<Box<dyn Future<Output = Result<T, Box<dyn std::error::Error>>>>>
-            + 'static,
-    >(
-        &mut self,
-        persist: F,
-    ) {
-        self.associations.push(AnyAssociation {
-            entity_type: TypeId::of::<T>(),
-            persist: Box::new(|conn| {
-                Box::pin(async move {
-                    let value = persist(conn).await?;
-
-                    Ok(Box::new(value) as Box<dyn Any>)
-                })
-                    as Pin<
-                        Box<dyn Future<Output = Result<Box<dyn Any>, Box<dyn std::error::Error>>>>,
-                    >
-            }),
-        });
-    }
-}
 
 pub trait Manifest {
     type Overrides: Default;
@@ -107,22 +55,6 @@ pub async fn persist_with<T: Manifest<AssociationsConn = T::Conn> + Persist>(
     }
 
     T::persist(&conn, entity).await
-}
-
-pub fn association<T: Manifest<AssociationsConn = T::Conn> + Persist + 'static>(
-    associations: &mut Associations<T::Conn>,
-) -> T {
-    let entity = manifest::<T>();
-
-    associations.persist::<T, _>(move |conn| {
-        Box::pin(async move {
-            let entity = persist::<T>(conn).await.map_err(|_| "failed to persist")?;
-
-            Ok(entity)
-        })
-    });
-
-    entity
 }
 
 #[cfg(test)]
